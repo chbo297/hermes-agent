@@ -281,8 +281,8 @@ class TestResolveDeliveryTarget:
             "deliver": "telegram:-1003724596514:17",
         }
         with patch(
-            "gateway.channel_directory.resolve_channel_name",
-            return_value="-1003724596514",
+            "gateway.channel_directory.resolve_channel_target",
+            return_value=("-1003724596514", None),
         ):
             result = _resolve_delivery_target(job)
         assert result == {
@@ -306,8 +306,8 @@ class TestResolveDeliveryTarget:
         """deliver: 'whatsapp:Alice (dm)' resolves to the real JID."""
         job = {"deliver": "whatsapp:Alice (dm)"}
         with patch(
-            "gateway.channel_directory.resolve_channel_name",
-            return_value="12345678901234@lid",
+            "gateway.channel_directory.resolve_channel_target",
+            return_value=("12345678901234@lid", None),
         ) as resolve_mock:
             result = _resolve_delivery_target(job)
         resolve_mock.assert_called_once_with("whatsapp", "Alice (dm)")
@@ -321,8 +321,8 @@ class TestResolveDeliveryTarget:
         """deliver: 'telegram:My Group' resolves without display suffix."""
         job = {"deliver": "telegram:My Group"}
         with patch(
-            "gateway.channel_directory.resolve_channel_name",
-            return_value="-1009999",
+            "gateway.channel_directory.resolve_channel_target",
+            return_value=("-1009999", None),
         ):
             result = _resolve_delivery_target(job)
         assert result == {
@@ -335,8 +335,8 @@ class TestResolveDeliveryTarget:
         """Resolved Telegram topic labels should split chat_id and thread_id."""
         job = {"deliver": "telegram:Coaching Chat / topic 17585 (group)"}
         with patch(
-            "gateway.channel_directory.resolve_channel_name",
-            return_value="-1009999:17585",
+            "gateway.channel_directory.resolve_channel_target",
+            return_value=("-1009999", "17585"),
         ):
             result = _resolve_delivery_target(job)
         assert result == {
@@ -349,7 +349,7 @@ class TestResolveDeliveryTarget:
         """deliver: 'whatsapp:12345@lid' passes through when directory has no match."""
         job = {"deliver": "whatsapp:12345@lid"}
         with patch(
-            "gateway.channel_directory.resolve_channel_name",
+            "gateway.channel_directory.resolve_channel_target",
             return_value=None,
         ):
             result = _resolve_delivery_target(job)
