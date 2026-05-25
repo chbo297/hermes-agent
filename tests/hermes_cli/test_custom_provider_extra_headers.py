@@ -42,6 +42,23 @@ def test_normalize_entry_keeps_extra_headers():
     }
 
 
+def test_normalize_entry_maps_legacy_headers_alias_to_extra_headers():
+    normalized = _normalize_custom_provider_entry(
+        {
+            "name": "legacy-proxy",
+            "base_url": "https://llm-proxy.example.test/v1",
+            "headers": {"X-Legacy": "yes", "X-Shared": "legacy"},
+            "extra_headers": {"X-Shared": "canonical"},
+        }
+    )
+
+    assert normalized is not None
+    assert normalized["extra_headers"] == {
+        "X-Legacy": "yes",
+        "X-Shared": "canonical",
+    }
+
+
 def test_normalize_entry_drops_invalid_extra_headers():
     for bad in ("not-a-dict", {}, 42, ["a"]):
         normalized = _normalize_custom_provider_entry(

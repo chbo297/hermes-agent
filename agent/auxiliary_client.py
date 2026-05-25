@@ -201,6 +201,22 @@ def _openai_http_client_kwargs(
     return {"http_client": client}
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
+    # Keep auxiliary calls on the same configured-header path as the primary
+    # agent. Applying this at the shared constructor covers title generation,
+    # compression, vision, fallback, and credential-refresh clients without
+    # duplicating provider lookup at every call site.
+    merged_headers = _apply_user_default_headers(kwargs.get("default_headers"))
+    if merged_headers:
+        kwargs["default_headers"] = merged_headers
+    try:
+        from hermes_cli.config import (
+            apply_custom_provider_extra_headers_to_client_kwargs,
+        )
+
+        apply_custom_provider_extra_headers_to_client_kwargs(kwargs, base_url)
+    except Exception:
+        logger.debug("auxiliary custom-provider extra_headers skipped", exc_info=True)
+
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     # Hermes owns auxiliary retry + provider/model fallback policy (the
     # same-provider transient retry in call_llm plus the except-chain
@@ -577,7 +593,7 @@ _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
 def _apply_user_default_headers(headers: dict | None) -> dict | None:
-    """Merge user-configured ``model.default_headers`` onto resolved headers.
+    """Merge user-configured model headers onto resolved headers.
 
     User values take precedence over provider/SDK defaults, mirroring the main
     agent client (``AIAgent._apply_user_default_headers``). This lets a
@@ -591,20 +607,9 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     when nothing is configured. No allocation when there are no overrides.
     """
     try:
-        from hermes_cli.config import cfg_get, load_config
-        _cfg = load_config()
-        user_headers = cfg_get(_cfg, "model", "default_headers")
-        # ``model.extra_headers`` is an accepted alias (matches the
-        # per-provider ``extra_headers`` key on providers/custom_providers
-        # entries). When both are set they merge, with ``extra_headers``
-        # winning. SECURITY: values may carry credentials — never log them.
-        alias_headers = cfg_get(_cfg, "model", "extra_headers")
-        if isinstance(alias_headers, dict) and alias_headers:
-            merged_user: dict = {}
-            if isinstance(user_headers, dict):
-                merged_user.update(user_headers)
-            merged_user.update(alias_headers)
-            user_headers = merged_user
+        from hermes_cli.config import get_configured_model_headers
+
+        user_headers = get_configured_model_headers()
     except Exception:
         return headers
     if not isinstance(user_headers, dict) or not user_headers:
@@ -4638,9 +4643,35 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
             pass
+    # The OpenAI SDK stores caller-supplied default headers separately from
+    # its generated protocol/auth headers. Preserve only that custom mapping
+    # when rebuilding an AsyncOpenAI client; copying the SDK's full internal
+    # defaults could leak stale Authorization or Content-Length values.
+    try:
+        from collections.abc import Mapping
+
+        sync_custom_headers = getattr(sync_client, "_custom_headers", None)
+        if isinstance(sync_custom_headers, Mapping) and sync_custom_headers:
+            preserved = dict(async_kwargs.get("default_headers") or {})
+            preserved.update(sync_custom_headers)
+            async_kwargs["default_headers"] = preserved
+    except Exception:
+        pass
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
+    # Per-provider config is the most specific layer and must win after sync
+    # header preservation, matching AIAgent._apply_client_headers_for_base_url.
+    try:
+        from hermes_cli.config import (
+            apply_custom_provider_extra_headers_to_client_kwargs,
+        )
+
+        apply_custom_provider_extra_headers_to_client_kwargs(
+            async_kwargs, sync_base_url,
+        )
+    except Exception:
+        logger.debug("async auxiliary extra_headers skipped", exc_info=True)
     async_kwargs = {
         **_openai_http_client_kwargs(sync_base_url, async_mode=True),
         **async_kwargs,

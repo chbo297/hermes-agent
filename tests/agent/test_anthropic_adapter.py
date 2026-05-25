@@ -122,6 +122,90 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://proxy.example.com/anthropic"
 
+    def test_configured_headers_merge_without_overriding_sdk_protocol_headers(self):
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://custom.api.com/v1",
+                "headers": {"X-Legacy": "1", "X-Shared": "global"},
+            },
+            "custom_providers": [
+                {
+                    "name": "anthropic-proxy",
+                    "base_url": "https://custom.api.com/v1",
+                    "headers": {
+                        "X-Shared": "provider",
+                        "X-Provider": "2",
+                        "Authorization": "must-not-override-sdk-auth",
+                        "anthropic-beta": "must-not-replace-betas",
+                    },
+                },
+            ],
+        }
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, patch(
+            "hermes_cli.config.load_config", return_value=config,
+        ):
+            build_anthropic_client(
+                "sk-ant-api03-x",
+                base_url="https://custom.api.com/v1",
+            )
+
+        kwargs = mock_sdk.Anthropic.call_args.kwargs
+        headers = kwargs["default_headers"]
+        assert headers["X-Legacy"] == "1"
+        assert headers["X-Shared"] == "provider"
+        assert headers["X-Provider"] == "2"
+        assert "Authorization" not in headers
+        assert "interleaved-thinking-2025-05-14" in headers["anthropic-beta"]
+
+    def test_unrelated_model_headers_are_not_sent_to_anthropic(self):
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://openai-gateway.example/v1",
+                "headers": {"X-Private-Gateway-Token": "must-not-leak"},
+                "default_headers": {"X-OpenAI-Only": "must-not-leak"},
+            },
+            "custom_providers": [
+                {
+                    "name": "other-gateway",
+                    "base_url": "https://other.example/v1",
+                    "extra_headers": {"X-Other-Secret": "must-not-leak"},
+                },
+            ],
+        }
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, patch(
+            "hermes_cli.config.load_config", return_value=config,
+        ):
+            build_anthropic_client(
+                "sk-ant-api03-x",
+                base_url="https://api.anthropic.com",
+            )
+
+        headers = mock_sdk.Anthropic.call_args.kwargs["default_headers"]
+        assert "X-Private-Gateway-Token" not in headers
+        assert "X-OpenAI-Only" not in headers
+        assert "X-Other-Secret" not in headers
+
+    def test_explicit_default_headers_merge_with_sdk_headers(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, patch(
+            "hermes_cli.config.load_config", return_value={},
+        ):
+            build_anthropic_client(
+                "sk-ant-api03-x",
+                base_url="https://custom.api.com",
+                default_headers={
+                    "comate_custom_header": "value",
+                    "Authorization": "must-not-override-sdk-auth",
+                    "anthropic-beta": "must-not-replace-betas",
+                },
+            )
+
+        headers = mock_sdk.Anthropic.call_args.kwargs["default_headers"]
+        assert headers["comate_custom_header"] == "value"
+        assert "Authorization" not in headers
+        assert "interleaved-thinking-2025-05-14" in headers["anthropic-beta"]
+
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(

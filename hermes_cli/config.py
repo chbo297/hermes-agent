@@ -5022,7 +5022,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body", "extra_headers",
+        "discover_models", "extra_body", "extra_headers", "headers",
         "ssl_ca_cert", "ssl_verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
@@ -5151,7 +5151,11 @@ def _normalize_custom_provider_entry(
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).
     # Values may carry credentials (e.g. CF-Access-Client-Secret) — never
     # log them anywhere downstream.
-    normalized_headers = normalize_extra_headers(entry.get("extra_headers"))
+    # ``headers`` was used by older fork builds for the same setting. Keep it
+    # as a compatibility alias while routing everything through the canonical
+    # ``extra_headers`` path; the canonical key wins on duplicate names.
+    normalized_headers = normalize_extra_headers(entry.get("headers"))
+    normalized_headers.update(normalize_extra_headers(entry.get("extra_headers")))
     if normalized_headers:
         normalized["extra_headers"] = normalized_headers
 
@@ -5351,6 +5355,36 @@ def normalize_extra_headers(extra_headers: Any) -> Dict[str, str]:
     if not isinstance(extra_headers, dict) or not extra_headers:
         return {}
     return {str(k): str(v) for k, v in extra_headers.items() if v is not None}
+
+
+def get_configured_model_headers(
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Return globally configured model request headers.
+
+    ``default_headers`` is the canonical global key. ``extra_headers`` is an
+    accepted alias, and ``headers`` remains a compatibility alias for older
+    fork configurations. Merge from legacy to canonical so newer settings win
+    on duplicate names.
+
+    SECURITY: values may carry credentials. Callers must never log the
+    returned mapping.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return {}
+    if not isinstance(config, dict):
+        return {}
+    model_config = config.get("model")
+    if not isinstance(model_config, dict):
+        return {}
+
+    merged: Dict[str, str] = {}
+    for key in ("headers", "default_headers", "extra_headers"):
+        merged.update(normalize_extra_headers(model_config.get(key)))
+    return merged
 
 
 def get_custom_provider_extra_headers(
@@ -5559,7 +5593,7 @@ _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
-    "context_length", "rate_limit_delay", "extra_body",
+    "context_length", "rate_limit_delay", "extra_body", "extra_headers", "headers",
     "ssl_ca_cert", "ssl_verify",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.

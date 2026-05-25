@@ -232,6 +232,32 @@ def test_user_default_headers_override_sdk_user_agent(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_legacy_model_headers_alias_uses_canonical_merge_path(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://llm-proxy.example.test/v1",
+        model="test-model",
+        provider="custom",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    with patch("hermes_cli.config.load_config", return_value={
+        "model": {
+            "headers": {"X-Legacy": "yes", "X-Shared": "legacy"},
+            "default_headers": {"X-Shared": "canonical"},
+        },
+    }):
+        agent._apply_client_headers_for_base_url("https://llm-proxy.example.test/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["X-Legacy"] == "yes"
+    assert headers["X-Shared"] == "canonical"
+
+
+@patch("run_agent.OpenAI")
 def test_user_default_headers_win_over_provider_defaults(mock_openai):
     """User headers take precedence but leave untouched provider defaults intact."""
     mock_openai.return_value = MagicMock()

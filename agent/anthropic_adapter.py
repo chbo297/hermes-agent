@@ -648,12 +648,138 @@ def _common_betas_for_base_url(
     return betas
 
 
+_ANTHROPIC_SDK_MANAGED_HEADERS = frozenset({
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "anthropic-beta",
+    "anthropic-version",
+    "content-length",
+    "connection",
+    "transfer-encoding",
+    "host",
+})
+
+
+def _merge_extra_default_headers(kwargs: dict, default_headers: dict | None) -> None:
+    """Merge safe caller headers without duplicating differently-cased names."""
+    if not isinstance(default_headers, dict) or not default_headers:
+        return
+    merged = dict(kwargs.get("default_headers") or {})
+    existing_names = {str(name).lower(): name for name in merged}
+    for raw_name, raw_value in default_headers.items():
+        if raw_name is None or raw_value is None:
+            continue
+        name = str(raw_name)
+        if not name:
+            continue
+        lower_name = name.lower()
+        if lower_name in _ANTHROPIC_SDK_MANAGED_HEADERS:
+            continue
+        value = str(raw_value)
+        if "\r" in name or "\n" in name or "\r" in value or "\n" in value:
+            continue
+        previous = existing_names.get(lower_name)
+        if previous is not None and previous != name:
+            merged.pop(previous, None)
+        merged[name] = value
+        existing_names[lower_name] = name
+    if merged:
+        kwargs["default_headers"] = merged
+
+
+def _request_header_base_variants(value: str | None) -> set[str]:
+    candidate = str(value or "").strip().rstrip("/").lower()
+    if not candidate:
+        return set()
+    try:
+        parsed = urlparse(candidate)
+        if parsed.scheme and parsed.netloc:
+            candidate = parsed._replace(query="", fragment="").geturl().rstrip("/")
+    except Exception:
+        pass
+    variants = {candidate}
+    if candidate.endswith("/v1"):
+        variants.add(candidate[:-3].rstrip("/"))
+    else:
+        variants.add(f"{candidate}/v1")
+    return variants
+
+
+def _scoped_legacy_anthropic_model_headers(
+    config: dict,
+    base_url: str | None,
+) -> dict[str, str]:
+    """Return old ``model.headers`` only when its endpoint scope matches."""
+    model_config = config.get("model")
+    if not isinstance(model_config, dict):
+        return {}
+    raw_headers = model_config.get("headers")
+    if not isinstance(raw_headers, dict) or not raw_headers:
+        return {}
+
+    configured_base = str(model_config.get("base_url") or "").strip()
+    current_base = str(base_url or "https://api.anthropic.com").strip()
+    if configured_base:
+        if not (
+            _request_header_base_variants(configured_base)
+            & _request_header_base_variants(current_base)
+        ):
+            return {}
+    else:
+        configured_provider = str(model_config.get("provider") or "").strip().lower()
+        if configured_provider != "anthropic" or not base_url_host_matches(
+            current_base, "api.anthropic.com"
+        ):
+            return {}
+
+    try:
+        from hermes_cli.config import normalize_extra_headers
+
+        return normalize_extra_headers(raw_headers)
+    except Exception:
+        return {}
+
+
+def _configured_anthropic_default_headers(base_url: str | None) -> dict[str, str]:
+    """Resolve safe configured headers for an Anthropic SDK client.
+
+    Reuses the official endpoint-scoped provider configuration while leaving
+    authentication and Anthropic protocol headers under SDK control. Older
+    fork ``model.headers`` remains available only when its provider/base scope
+    matches this endpoint; global OpenAI-wire headers are intentionally not
+    inherited.
+    """
+    try:
+        from hermes_cli.config import (
+            get_custom_provider_extra_headers,
+            load_config,
+        )
+
+        config = load_config()
+        # Global model.default_headers / model.extra_headers explicitly apply
+        # only to OpenAI-wire clients. For Anthropic, retain the old fork key
+        # only when its provider/base_url scope proves this is the intended
+        # endpoint, then layer exact per-provider headers on top.
+        merged = _scoped_legacy_anthropic_model_headers(config, base_url)
+        merged.update(
+            get_custom_provider_extra_headers(str(base_url or ""), config=config)
+        )
+    except Exception:
+        logger.debug("configured Anthropic headers skipped", exc_info=True)
+        return {}
+
+    return merged
+
+
 def _build_anthropic_client_with_bearer_hook(
     token_provider,
     base_url: str = None,
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    default_headers: dict | None = None,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
 
@@ -721,6 +847,10 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    _merge_extra_default_headers(
+        kwargs, _configured_anthropic_default_headers(base_url)
+    )
+    _merge_extra_default_headers(kwargs, default_headers)
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
@@ -730,6 +860,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    default_headers: dict | None = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -771,6 +902,7 @@ def build_anthropic_client(
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
             drop_context_1m_beta=drop_context_1m_beta,
+            default_headers=default_headers,
         )
 
     normalize_proxy_env_vars()
@@ -850,6 +982,10 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    _merge_extra_default_headers(
+        kwargs, _configured_anthropic_default_headers(base_url)
+    )
+    _merge_extra_default_headers(kwargs, default_headers)
     return _anthropic_sdk.Anthropic(**kwargs)
 
 

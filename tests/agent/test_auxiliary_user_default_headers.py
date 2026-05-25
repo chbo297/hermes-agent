@@ -135,3 +135,50 @@ class TestAuxClientHonorsUserDefaultHeaders:
         assert client is not None
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
         assert headers.get("User-Agent") == "curl/8.7.1"
+
+    def test_named_custom_provider_honors_provider_extra_headers(self, tmp_path):
+        """Auxiliary clients use the official per-provider header path too."""
+        _write_config(tmp_path, {
+            "model": {
+                "default": "test-model",
+                "default_headers": {"X-Shared": "global", "X-Global": "1"},
+            },
+            "custom_providers": [
+                {
+                    "name": "my-gw",
+                    "base_url": "http://my-gw.local/v1",
+                    "api_key": "k",
+                    "extra_headers": {"X-Shared": "provider", "X-Local": "2"},
+                },
+            ],
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, _ = resolve_provider_client("my-gw", "test-model")
+
+        assert client is not None
+        headers = mock_openai.call_args.kwargs["default_headers"]
+        assert headers["X-Global"] == "1"
+        assert headers["X-Local"] == "2"
+        assert headers["X-Shared"] == "provider"
+
+    def test_async_client_preserves_sync_custom_headers(self, tmp_path):
+        _write_config(tmp_path, {"model": {"default": "test-model"}})
+        from types import SimpleNamespace
+        from agent.auxiliary_client import _to_async_client
+
+        sync_client = SimpleNamespace(
+            api_key="test-key",
+            base_url="https://api.example.test/v1",
+            _custom_headers={"X-Sync-Custom": "kept"},
+        )
+        with patch("openai.AsyncOpenAI") as mock_async_openai, patch(
+            "agent.auxiliary_client._openai_http_client_kwargs",
+            return_value={},
+        ):
+            _to_async_client(sync_client, "test-model")
+
+        headers = mock_async_openai.call_args.kwargs["default_headers"]
+        assert headers["X-Sync-Custom"] == "kept"
