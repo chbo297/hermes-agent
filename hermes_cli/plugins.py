@@ -171,6 +171,12 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Gateway post-resolution hook. Fired once the gateway has resolved the
+    # final SessionEntry for an incoming message, after topic/session routing
+    # and before agent processing. Observers only; return values are ignored.
+    # Kwargs: event, source, session_id, session_key, platform, chat_id,
+    # chat_type, user_id, user_name, is_new_session, was_auto_reset, reset_reason.
+    "post_gateway_session_resolved",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.
