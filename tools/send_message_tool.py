@@ -694,6 +694,155 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
+def _platform_name(platform) -> str:
+    return platform.value if hasattr(platform, "value") else str(platform)
+
+
+def _get_registered_plugin_entry(platform):
+    platform_name = _platform_name(platform)
+    try:
+        from gateway.platform_registry import platform_registry
+
+        entry = platform_registry.get(platform_name)
+    except Exception:
+        return None
+    if entry is not None and getattr(entry, "source", "plugin") == "plugin":
+        return entry
+    return None
+
+
+def _get_live_adapter_for_platform(platform):
+    try:
+        from gateway.run import _gateway_runner_ref
+
+        runner = _gateway_runner_ref()
+    except Exception:
+        return None
+    if runner is None:
+        return None
+    try:
+        return runner.adapters.get(platform)
+    except Exception:
+        return None
+
+
+def _plugin_entry_supports_send_message_media(entry) -> bool:
+    if entry is None:
+        return False
+    if bool(getattr(entry, "send_message_media", False)):
+        return True
+    sender = getattr(entry, "standalone_sender_fn", None)
+    return bool(
+        getattr(sender, "send_message_media", False)
+        or getattr(sender, "supports_send_message_media", False)
+        or getattr(sender, "supports_media", False)
+    )
+
+
+def _plugin_platform_can_receive_media(platform) -> bool:
+    entry = _get_registered_plugin_entry(platform)
+    if entry is None:
+        return False
+    adapter = _get_live_adapter_for_platform(platform)
+    if adapter is not None and _adapter_overrides_media_method(adapter, "send_image_file"):
+        return True
+    return _plugin_entry_supports_send_message_media(entry)
+
+
+def _media_file_path_and_voice(media_entry):
+    if isinstance(media_entry, (tuple, list)):
+        media_path = media_entry[0] if media_entry else ""
+        is_voice = bool(media_entry[1]) if len(media_entry) > 1 else False
+        return str(media_path), is_voice
+    return str(media_entry), False
+
+
+def _adapter_overrides_media_method(adapter, method_name: str) -> bool:
+    if not hasattr(adapter, method_name):
+        return False
+    if method_name in getattr(adapter, "__dict__", {}):
+        return True
+    try:
+        from gateway.platforms.base import BasePlatformAdapter
+
+        base_method = getattr(BasePlatformAdapter, method_name, None)
+    except Exception:
+        base_method = None
+    adapter_method = getattr(type(adapter), method_name, None)
+    return adapter_method is not None and adapter_method is not base_method
+
+
+def _result_success(result) -> bool:
+    if isinstance(result, dict):
+        return bool(result.get("success"))
+    return bool(getattr(result, "success", False))
+
+
+def _result_error(result):
+    if isinstance(result, dict):
+        return result.get("error")
+    return getattr(result, "error", None)
+
+
+def _result_message_id(result):
+    if isinstance(result, dict):
+        return result.get("message_id")
+    return getattr(result, "message_id", None)
+
+
+def _result_to_success_dict(result) -> dict:
+    if isinstance(result, dict):
+        return dict(result)
+    payload = {"success": True}
+    message_id = _result_message_id(result)
+    if message_id:
+        payload["message_id"] = message_id
+    continuation_ids = getattr(result, "continuation_message_ids", ()) or ()
+    if continuation_ids:
+        payload["continuation_message_ids"] = tuple(continuation_ids)
+    return payload
+
+
+async def _send_plugin_media_via_adapter(adapter, chat_id, media_files, *, metadata=None, force_document=False):
+    if not media_files:
+        return {"success": True}
+    if force_document:
+        return {"error": "Plugin MEDIA delivery via send_message currently supports native image attachments only"}
+    if not _adapter_overrides_media_method(adapter, "send_image_file"):
+        return {"error": "Plugin adapter does not implement native image MEDIA delivery"}
+
+    message_ids = []
+    last_result = None
+    for media_entry in media_files:
+        media_path, is_voice = _media_file_path_and_voice(media_entry)
+        ext = os.path.splitext(media_path)[1].lower()
+        if is_voice or ext not in _IMAGE_EXTS:
+            return {"error": "Plugin MEDIA delivery via send_message currently supports native image attachments only"}
+        if not os.path.exists(media_path):
+            return {"error": "Plugin image MEDIA delivery failed: file not found"}
+        try:
+            result = await adapter.send_image_file(
+                chat_id=chat_id,
+                image_path=media_path,
+                metadata=metadata,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            return {"error": f"Plugin image MEDIA delivery failed: {e}"}
+        if not _result_success(result):
+            return {"error": f"Plugin image MEDIA delivery failed: {_result_error(result) or 'unknown error'}"}
+        message_id = _result_message_id(result)
+        if message_id:
+            message_ids.append(message_id)
+        last_result = result
+
+    payload = _result_to_success_dict(last_result) if last_result is not None else {"success": True}
+    if len(message_ids) > 1:
+        payload["message_ids"] = message_ids
+    return payload
+
+
 async def _send_via_adapter(
     platform,
     pconfig,
@@ -715,52 +864,57 @@ async def _send_via_adapter(
          the runner weakref is ``None``).
       3. A descriptive error explaining both options.
     """
-    platform_name = platform.value if hasattr(platform, "value") else str(platform)
-    runner = None
-    try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
-    except Exception:
-        runner = None
-
-    if runner is not None:
+    platform_name = _platform_name(platform)
+    adapter = _get_live_adapter_for_platform(platform)
+    if adapter is not None:
+        metadata = {}
+        if thread_id:
+            metadata["thread_id"] = thread_id
+        if platform_name == "ntfy" and chat_id:
+            metadata["publish_topic"] = chat_id
+        if not metadata:
+            metadata = None
+        last_result = None
         try:
-            adapter = runner.adapters.get(platform)
-        except Exception:
-            adapter = None
-        if adapter is not None:
-            try:
-                metadata = {}
-                if thread_id:
-                    metadata["thread_id"] = thread_id
-                if platform_name == "ntfy" and chat_id:
-                    metadata["publish_topic"] = chat_id
-                if not metadata:
-                    metadata = None
+            if str(chunk or "").strip():
                 result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                return {"error": f"Plugin platform send failed: {e}"}
-            if result.success:
-                return {"success": True, "message_id": result.message_id}
-            return {"error": f"Adapter send failed: {result.error}"}
+                if not _result_success(result):
+                    return {"error": f"Adapter send failed: {_result_error(result) or 'unknown error'}"}
+                last_result = result
+            if media_files:
+                result = await _send_plugin_media_via_adapter(
+                    adapter,
+                    chat_id,
+                    media_files,
+                    metadata=metadata,
+                    force_document=force_document,
+                )
+                if isinstance(result, dict) and result.get("error"):
+                    return result
+                last_result = result
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            return {"error": f"Plugin platform send failed: {e}"}
+        if last_result is None:
+            return {"error": "Plugin platform send had neither text nor media to deliver"}
+        return _result_to_success_dict(last_result)
 
-    entry = None
-    try:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform_name)
-    except Exception:
-        entry = None
+    entry = _get_registered_plugin_entry(platform)
 
     if entry is not None and entry.standalone_sender_fn is not None:
+        standalone_media_files = media_files
+        if media_files and not _plugin_entry_supports_send_message_media(entry):
+            if not str(chunk or "").strip():
+                return {"error": "Plugin platform does not declare send_message MEDIA support"}
+            standalone_media_files = []
         try:
             result = await entry.standalone_sender_fn(
                 pconfig,
                 chat_id,
                 chunk,
                 thread_id=thread_id,
-                media_files=media_files,
+                media_files=standalone_media_files,
                 force_document=force_document,
             )
         except asyncio.CancelledError:
@@ -1044,6 +1198,25 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Registered plugin platforms: let the plugin's adapter/standalone hook own MEDIA ---
+    if media_files and _plugin_platform_can_receive_media(platform):
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_via_adapter(
+                platform,
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else [],
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
@@ -1060,7 +1233,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         )
 
     last_result = None
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
+        is_last = (i == len(chunks) - 1)
         if platform == Platform.SLACK:
             # Slack migrated to a bundled plugin (#41112); delivery flows
             # through the registry's standalone_sender_fn, which applies
@@ -1102,7 +1276,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chat_id,
                 chunk,
                 thread_id=thread_id,
-                media_files=media_files,
+                media_files=media_files if is_last else [],
                 force_document=force_document,
             )
 
