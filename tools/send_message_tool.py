@@ -744,8 +744,8 @@ def _plugin_platform_can_receive_media(platform) -> bool:
     if entry is None:
         return False
     adapter = _get_live_adapter_for_platform(platform)
-    if adapter is not None and _adapter_overrides_media_method(adapter, "send_image_file"):
-        return True
+    if adapter is not None:
+        return _adapter_overrides_media_method(adapter, "send_image_file")
     return _plugin_entry_supports_send_message_media(entry)
 
 
@@ -874,6 +874,13 @@ async def _send_via_adapter(
             metadata["publish_topic"] = chat_id
         if not metadata:
             metadata = None
+        effective_media_files = media_files
+        if (
+            media_files
+            and str(chunk or "").strip()
+            and not _adapter_overrides_media_method(adapter, "send_image_file")
+        ):
+            effective_media_files = []
         last_result = None
         try:
             if str(chunk or "").strip():
@@ -881,11 +888,11 @@ async def _send_via_adapter(
                 if not _result_success(result):
                     return {"error": f"Adapter send failed: {_result_error(result) or 'unknown error'}"}
                 last_result = result
-            if media_files:
+            if effective_media_files:
                 result = await _send_plugin_media_via_adapter(
                     adapter,
                     chat_id,
-                    media_files,
+                    effective_media_files,
                     metadata=metadata,
                     force_document=force_document,
                 )
@@ -1276,7 +1283,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chat_id,
                 chunk,
                 thread_id=thread_id,
-                media_files=media_files if is_last else [],
+                media_files=[],
                 force_document=force_document,
             )
 
