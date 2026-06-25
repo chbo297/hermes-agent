@@ -140,7 +140,7 @@ TIPS = [
     "browser_console can evaluate JavaScript expressions in the page context.",
     "image_generate creates images with FLUX 2 Pro and automatic 2x upscaling.",
     "text_to_speech converts text to audio — plays as voice bubbles on Telegram.",
-    "send_message can reach any connected messaging platform from within a session.",
+    "Use `hermes send` or platform-specific plugin tools to deliver messages outside the current session.",
     "The todo tool helps the agent track complex multi-step tasks during a session.",
     "session_search performs full-text search across ALL past conversations.",
     "The agent automatically saves preferences, corrections, and environment facts to memory.",

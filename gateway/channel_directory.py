@@ -439,7 +439,7 @@ def _split_legacy_composite_id(
     return entry_id, None
 
 
-def resolve_channel_name(
+def resolve_channel_target(
     platform_name: str, name: str
 ) -> Optional[Tuple[str, Optional[str]]]:
     """
@@ -500,6 +500,20 @@ def resolve_channel_name(
         return _result(matches[0])
 
     return None
+
+
+def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
+    """Resolve a human-friendly channel name to the directory's sendable ID.
+
+    Kept for existing callers that expect a string.  Threaded targets are
+    returned in the same composite form stored in the directory, e.g.
+    ``chat_id:thread_id``.
+    """
+    result = resolve_channel_target(platform_name, name)
+    if not result:
+        return None
+    chat_id, thread_id = result
+    return f"{chat_id}:{thread_id}" if thread_id else chat_id
 
 
 def format_directory_for_display() -> str:

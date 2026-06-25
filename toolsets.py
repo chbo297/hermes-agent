@@ -187,7 +187,6 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
-    
 
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
@@ -343,7 +342,7 @@ TOOLSETS = {
 
     # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
     # code workspace; see agent/coding_context.py. Keeps everything you reach
-    # for while pairing on code and drops the rest (messaging, tts, image_gen,
+    # for while pairing on code and drops the rest (tts, image_gen,
     # spotify, home-assistant, cron, computer-use).
     "coding": {
         "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
@@ -371,10 +370,9 @@ TOOLSETS = {
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)
     #
-    # All platforms share the same core tools. Note: agents do NOT get an
-    # agent-callable send_message tool — outbound platform messaging is handled
-    # outside the agent loop (cron delivery, the gateway kanban notifier, and
-    # the `hermes send` CLI), not by the model deciding to send on its own.
+    # All platforms share the same core tools. Agents do not get a generic
+    # agent-callable send_message tool; outbound messaging is handled through
+    # platform-specific plugin tools or non-agent delivery surfaces.
     # ==========================================================================
 
     "hermes-acp": {

@@ -11,6 +11,7 @@ from gateway.channel_directory import (
     build_channel_directory,
     lookup_channel_type,
     resolve_channel_name,
+    resolve_channel_target,
     format_directory_for_display,
     load_directory,
     _apply_channel_aliases,
@@ -177,16 +178,16 @@ class TestResolveChannelName:
             ]
         }
         with self._setup(tmp_path, platforms):
-            assert resolve_channel_name("discord", "bot-home") == ("111", None)
-            assert resolve_channel_name("discord", "#bot-home") == ("111", None)
+            assert resolve_channel_name("discord", "bot-home") == "111"
+            assert resolve_channel_name("discord", "#bot-home") == "111"
 
     def test_case_insensitive(self, tmp_path):
         platforms = {
             "slack": [{"id": "C01", "name": "Engineering", "type": "channel"}]
         }
         with self._setup(tmp_path, platforms):
-            assert resolve_channel_name("slack", "engineering") == ("C01", None)
-            assert resolve_channel_name("slack", "ENGINEERING") == ("C01", None)
+            assert resolve_channel_name("slack", "engineering") == "C01"
+            assert resolve_channel_name("slack", "ENGINEERING") == "C01"
 
     def test_guild_qualified_match(self, tmp_path):
         platforms = {
@@ -196,8 +197,8 @@ class TestResolveChannelName:
             ]
         }
         with self._setup(tmp_path, platforms):
-            assert resolve_channel_name("discord", "ServerA/general") == ("111", None)
-            assert resolve_channel_name("discord", "ServerB/general") == ("222", None)
+            assert resolve_channel_name("discord", "ServerA/general") == "111"
+            assert resolve_channel_name("discord", "ServerB/general") == "222"
 
     def test_prefix_match_unambiguous(self, tmp_path):
         platforms = {
@@ -208,7 +209,7 @@ class TestResolveChannelName:
         }
         with self._setup(tmp_path, platforms):
             # "engineering" prefix matches only one channel
-            assert resolve_channel_name("slack", "engineering") == ("C01", None)
+            assert resolve_channel_name("slack", "engineering") == "C01"
 
     def test_prefix_match_ambiguous_returns_none(self, tmp_path):
         platforms = {
@@ -238,7 +239,7 @@ class TestResolveChannelName:
             ]
         }
         with self._setup(tmp_path, platforms):
-            assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == ("-1001", "17585")
+            assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == "-1001:17585"
 
     def test_legacy_topic_composite_id_without_thread_field_resolves(self, tmp_path):
         platforms = {
@@ -247,7 +248,7 @@ class TestResolveChannelName:
             ]
         }
         with self._setup(tmp_path, platforms):
-            assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == ("-1001", "17585")
+            assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == "-1001:17585"
 
     def test_legacy_matrix_thread_composite_id_without_thread_field_resolves(self, tmp_path):
         platforms = {
@@ -260,9 +261,9 @@ class TestResolveChannelName:
             ]
         }
         with self._setup(tmp_path, platforms):
-            assert resolve_channel_name("matrix", "Ops / topic $thread123") == (
-                "!roomid:matrix.example.org",
-                "$thread123:matrix.example.org",
+            assert (
+                resolve_channel_name("matrix", "Ops / topic $thread123")
+                == "!roomid:matrix.example.org:$thread123:matrix.example.org"
             )
 
     def test_id_match_takes_precedence_over_name(self, tmp_path):
@@ -276,9 +277,9 @@ class TestResolveChannelName:
             ]
         }
         with self._setup(tmp_path, platforms):
-            assert resolve_channel_name("slack", "C0B0QV5434G") == ("C0B0QV5434G", None)
+            assert resolve_channel_name("slack", "C0B0QV5434G") == "C0B0QV5434G"
             # Lowercase still falls through to name matching (case-insensitive)
-            assert resolve_channel_name("slack", "c0b0qv5434g") == ("C99", None)
+            assert resolve_channel_name("slack", "c0b0qv5434g") == "C99"
 
     def test_display_label_with_type_suffix_resolves(self, tmp_path):
         platforms = {
@@ -289,9 +290,48 @@ class TestResolveChannelName:
             ]
         }
         with self._setup(tmp_path, platforms):
-            assert resolve_channel_name("telegram", "Alice (dm)") == ("123", None)
-            assert resolve_channel_name("telegram", "Dev Group (group)") == ("456", None)
-            assert resolve_channel_name("telegram", "Coaching Chat / topic 17585 (group)") == ("-1001", "17585")
+            assert resolve_channel_name("telegram", "Alice (dm)") == "123"
+            assert resolve_channel_name("telegram", "Dev Group (group)") == "456"
+            assert resolve_channel_name("telegram", "Coaching Chat / topic 17585 (group)") == "-1001:17585"
+
+
+class TestResolveChannelTarget:
+    def _setup(self, tmp_path, platforms):
+        cache_file = _write_directory(tmp_path, platforms)
+        return patch("gateway.channel_directory.DIRECTORY_PATH", cache_file)
+
+    def test_topic_name_resolves_to_chat_and_thread(self, tmp_path):
+        platforms = {
+            "telegram": [
+                {
+                    "id": "-1001:17585",
+                    "name": "Coaching Chat / topic 17585",
+                    "type": "group",
+                    "thread_id": "17585",
+                }
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_target("telegram", "Coaching Chat / topic 17585") == (
+                "-1001",
+                "17585",
+            )
+
+    def test_legacy_matrix_thread_composite_id_without_thread_field_resolves(self, tmp_path):
+        platforms = {
+            "matrix": [
+                {
+                    "id": "!roomid:matrix.example.org:$thread123:matrix.example.org",
+                    "name": "Ops / topic $thread123",
+                    "type": "group",
+                }
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_target("matrix", "Ops / topic $thread123") == (
+                "!roomid:matrix.example.org",
+                "$thread123:matrix.example.org",
+            )
 
 
 class TestBuildFromSessions:

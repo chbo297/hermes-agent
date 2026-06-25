@@ -288,14 +288,14 @@ def _handle_react(args, remove=False):
         chat_id, _thread_id, _ = _parse_target_ref(platform_name, target_ref)
         if not chat_id:
             try:
-                from gateway.channel_directory import resolve_channel_name
-                resolved = resolve_channel_name(platform_name, target_ref)
+                from gateway.channel_directory import resolve_channel_target
+                resolved = resolve_channel_target(platform_name, target_ref)
             except Exception:
                 resolved = None
             # Opaque platform-native ids (e.g. photon space GUIDs like
             # 'any;-;+1555...') match no parser pattern and no directory
             # entry — pass them through verbatim; the adapter validates.
-            chat_id = resolved or target_ref
+            chat_id = resolved[0] if resolved else target_ref
 
     try:
         from gateway.config import Platform, load_gateway_config
@@ -373,8 +373,8 @@ def _handle_send(args):
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
         try:
-            from gateway.channel_directory import resolve_channel_name
-            result = resolve_channel_name(platform_name, target_ref)
+            from gateway.channel_directory import resolve_channel_target
+            result = resolve_channel_target(platform_name, target_ref)
             if result:
                 chat_id, thread_id = result
             else:
@@ -2161,7 +2161,7 @@ from tools.registry import tool_error
 # helpers) remains the shared transport used by:
 #   - cron delivery (cron/scheduler.py)
 #   - the ``hermes send`` CLI command (hermes_cli/send_cmd.py)
-#   - the gateway kanban notifier (dashboard-toggled, outside agent control)
+#   - gateway notifiers that run outside direct agent control
 #   - the standalone MCP server (mcp_serve.py), which is an opt-in surface
 # Those callers import the helpers directly; none of them need the registry
 # entry.
